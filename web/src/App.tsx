@@ -55,7 +55,7 @@ export default function App() {
         path === '/record' ? <RecordScreen refresh={refresh} /> :
         path === '/playlists' ? <PlaylistsScreen songs={songs} playlists={playlists} refresh={refresh} createShare={createShare} /> :
         path === '/shares' ? <SharesScreen shares={shares} songs={songs} playlists={playlists} refresh={refresh} /> :
-        path === '/account' ? <><PageHeader title="Account" /><ProfilePage app={fas} /></> :
+        path === '/account' ? <><PageHeader title="Account" /><ProfilePage app={fas} /><p className="mt-8 text-sm text-[var(--muted)]">MyTunes is free on <a className="underline" href="https://freeappstore.online">FreeAppStore</a>.</p></> :
         <LibraryScreen songs={songs} playlists={playlists} refresh={refresh} createShare={createShare} navigate={navigate} />}
     </div>
   </Shell>
