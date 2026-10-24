@@ -4,6 +4,7 @@ import { type NavItem, Card, EmptyState, PageHeader, ProfilePage, Shell, useToas
 import { deletePlaylist, deleteShare, deleteSong, listPlaylists, listShares, listSongs, savePlaylist, saveShare, saveSong, type Playlist, type Share, type Song } from './library'
 import { fas, hostShares, joinShare, type SharedInfo } from './sharing'
 import { useTabRecorder } from './useTabRecorder'
+import { MusicPlayer } from './MusicPlayer'
 
 const NAV: NavItem[] = [
   { label: 'Library', href: '/', title: 'Library — MyTunes' },
@@ -24,7 +25,18 @@ export default function App() {
   const [playlists, setPlaylists] = useState<Playlist[]>([])
   const [shares, setShares] = useState<Share[]>([])
   const [ready, setReady] = useState(false)
+  const [localQueue, setLocalQueue] = useState<{ ids: string[]; id: string } | null>(null)
+  const [localAudio, setLocalAudio] = useState<{ id: string; url: string } | null>(null)
   const { user } = useAuth(fas)
+  const selectedSong = songs.find(song => song.id === localQueue?.id)
+  const queueSongs = localQueue?.ids.map(id => songs.find(song => song.id === id)).filter((song): song is Song => Boolean(song)) ?? []
+  const sharedRoute = path.startsWith('/s/')
+  useEffect(() => {
+    if (!selectedSong) { setLocalAudio(null); return }
+    const url = URL.createObjectURL(selectedSong.audio)
+    setLocalAudio({ id: selectedSong.id, url })
+    return () => URL.revokeObjectURL(url)
+  }, [selectedSong?.id, selectedSong?.audio])
   async function refresh() {
     const [a, b, c] = await Promise.all([listSongs(), listPlaylists(), listShares()])
     setSongs(a.sort((x, y) => y.createdAt - x.createdAt))
@@ -42,6 +54,10 @@ export default function App() {
     if (user && ready && shares.length) return hostShares(shares, songs, playlists)
   }, [user, ready, shares, songs, playlists])
   const navigate = (href: string) => { history.pushState(null, '', href); setPath(href) }
+  const playQueue = (ids: string[], id: string) => {
+    setLocalQueue({ ids, id })
+    if (window.innerWidth < 1024) window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
   async function createShare(kind: Share['kind'], targetId: string) {
     const old = shares.find(s => s.kind === kind && s.targetId === targetId)
     if (old) return old
@@ -51,12 +67,19 @@ export default function App() {
   }
   return <Shell app={fas} appName="MyTunes" nav={NAV} onNavigate={navigate} requireAuth>
     <div className="mx-auto w-full max-w-5xl p-4 pb-20 sm:p-8">
-      {path.startsWith('/s/') ? <SharedScreen token={path.slice(3)} /> :
+      <div className={selectedSong && !sharedRoute ? 'grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]' : ''}>
+      <div className={selectedSong && !sharedRoute ? 'order-last min-w-0 lg:order-first' : ''}>
+      {sharedRoute ? <SharedScreen token={path.slice(3)} /> :
         path === '/record' ? <RecordScreen refresh={refresh} /> :
-        path === '/playlists' ? <PlaylistsScreen songs={songs} playlists={playlists} refresh={refresh} createShare={createShare} /> :
+        path === '/playlists' ? <PlaylistsScreen songs={songs} playlists={playlists} refresh={refresh} createShare={createShare} playQueue={playQueue} /> :
         path === '/shares' ? <SharesScreen shares={shares} songs={songs} playlists={playlists} refresh={refresh} /> :
         path === '/account' ? <><PageHeader title="Account" /><ProfilePage app={fas} /><p className="mt-8 text-sm text-[var(--muted)]">MyTunes is free on <a className="underline" href="https://freeappstore.online">FreeAppStore</a>.</p></> :
-        <LibraryScreen songs={songs} playlists={playlists} refresh={refresh} createShare={createShare} navigate={navigate} />}
+        <LibraryScreen songs={songs} playlists={playlists} refresh={refresh} createShare={createShare} navigate={navigate} playQueue={playQueue} />}
+      </div>
+      {selectedSong && !sharedRoute && <aside className="order-first lg:order-last"><div className="lg:sticky lg:top-6">
+        <MusicPlayer tracks={queueSongs} selectedId={selectedSong.id} src={localAudio?.id === selectedSong.id ? localAudio.url : ''} onSelect={id => setLocalQueue(current => current ? { ...current, id } : null)} />
+      </div></aside>}
+      </div>
     </div>
   </Shell>
 }
@@ -108,13 +131,7 @@ function ShareButton({ kind, id, createShare }: { kind: Share['kind']; id: strin
   return <button className={secondary} onClick={() => void copy()}>Share {kind}</button>
 }
 
-function SongPlayer({ song }: { song: Song }) {
-  const [url, setUrl] = useState('')
-  useEffect(() => { const next = URL.createObjectURL(song.audio); setUrl(next); return () => URL.revokeObjectURL(next) }, [song.audio])
-  return <audio aria-label={'Play ' + song.title} controls preload="none" src={url} className="w-full" />
-}
-
-function LibraryScreen({ songs, playlists, refresh, createShare, navigate }: { songs: Song[]; playlists: Playlist[]; refresh: () => Promise<void>; createShare: (kind: Share['kind'], id: string) => Promise<Share>; navigate: (href: string) => void }) {
+function LibraryScreen({ songs, playlists, refresh, createShare, navigate, playQueue }: { songs: Song[]; playlists: Playlist[]; refresh: () => Promise<void>; createShare: (kind: Share['kind'], id: string) => Promise<Share>; navigate: (href: string) => void; playQueue: (ids: string[], id: string) => void }) {
   const toast = useToast()
   async function add(songId: string, playlistId: string) {
     const p = playlists.find(item => item.id === playlistId)
@@ -133,15 +150,14 @@ function LibraryScreen({ songs, playlists, refresh, createShare, navigate }: { s
     {!songs.length ? <EmptyState title="No songs yet" message="Record from another tab to start your library." action={<button className={primary} onClick={() => navigate('/record')}>Record your first song</button>} /> :
       <div className="grid gap-4">{songs.map(song => <Card key={song.id}><div className="space-y-3">
         <div><h2 className="text-lg font-bold">{song.title}</h2><p className="text-sm text-[var(--muted)]">{song.artist || 'Unknown artist'} · {clock(song.duration)}</p></div>
-        <SongPlayer song={song} />
-        <div className="flex flex-wrap gap-2"><ShareButton kind="song" id={song.id} createShare={createShare} />
+        <div className="flex flex-wrap gap-2"><button className={primary} onClick={() => playQueue(songs.map(item => item.id), song.id)}>▶ Play</button><ShareButton kind="song" id={song.id} createShare={createShare} />
           {playlists.length > 0 && <select className={field} aria-label={'Add ' + song.title + ' to playlist'} defaultValue="" onChange={e => void add(song.id, e.target.value)}><option value="" disabled>Add to playlist…</option>{playlists.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>}
           <button className={secondary} onClick={() => void remove(song.id)}>Delete</button></div>
       </div></Card>)}</div>}
   </>
 }
 
-function PlaylistsScreen({ songs, playlists, refresh, createShare }: { songs: Song[]; playlists: Playlist[]; refresh: () => Promise<void>; createShare: (kind: Share['kind'], id: string) => Promise<Share> }) {
+function PlaylistsScreen({ songs, playlists, refresh, createShare, playQueue }: { songs: Song[]; playlists: Playlist[]; refresh: () => Promise<void>; createShare: (kind: Share['kind'], id: string) => Promise<Share>; playQueue: (ids: string[], id: string) => void }) {
   const [name, setName] = useState('')
   async function create() { if (name.trim()) { await savePlaylist({ id: crypto.randomUUID(), name: name.trim(), songIds: [], createdAt: Date.now() }); setName(''); await refresh() } }
   async function remove(id: string) { if (confirm('Delete playlist? Songs stay in your library.')) { await deletePlaylist(id); await refresh() } }
@@ -151,7 +167,8 @@ function PlaylistsScreen({ songs, playlists, refresh, createShare }: { songs: So
     <Card><div className="flex flex-wrap gap-2"><input className={field} aria-label="New playlist name" placeholder="New playlist name" value={name} onChange={e => setName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void create() }} maxLength={100} /><button className={primary} disabled={!name.trim()} onClick={() => void create()}>Create playlist</button></div></Card>
     <div className="mt-5 grid gap-4">{playlists.map(p => <Card key={p.id}><div className="space-y-3">
       <div><h2 className="text-xl font-bold">{p.name}</h2><p className="text-sm text-[var(--muted)]">{p.songIds.length} songs</p></div>
-      {p.songIds.map(id => songs.find(s => s.id === id)).filter((s): s is Song => Boolean(s)).map(s => <div className="border-t border-[var(--line)] pt-3" key={s.id}><div className="flex justify-between"><strong>{s.title}</strong><button className="underline" onClick={() => void removeSongFrom(p, s.id)}>Remove</button></div><SongPlayer song={s} /></div>)}
+      {p.songIds.length > 0 && <button className={primary} onClick={() => playQueue(p.songIds, p.songIds[0])}>▶ Play playlist</button>}
+      {p.songIds.map(id => songs.find(s => s.id === id)).filter((s): s is Song => Boolean(s)).map(s => <div className="flex items-center gap-2 border-t border-[var(--line)] pt-3" key={s.id}><button className="min-w-0 flex-1 truncate text-left font-semibold hover:underline" onClick={() => playQueue(p.songIds, s.id)}>▶ {s.title}</button><span className="text-sm text-[var(--muted)]">{clock(s.duration)}</span><button className="underline" onClick={() => void removeSongFrom(p, s.id)}>Remove</button></div>)}
       <div className="flex gap-2"><ShareButton kind="playlist" id={p.id} createShare={createShare} /><button className={secondary} onClick={() => void remove(p.id)}>Delete playlist</button></div>
     </div></Card>)}</div>
   </>
@@ -181,6 +198,14 @@ function SharedScreen({ token }: { token: string }) {
   const playback = useRef<Playback | null>(null)
   const client = useRef<ReturnType<typeof joinShare> | null>(null)
   const urlRef = useRef('')
+  function requestTrack(id: string) {
+    playback.current = null
+    replaceUrl('')
+    setPlaying(id)
+    setReceived(0)
+    setError('')
+    client.current?.request(id)
+  }
   function replaceUrl(next: string) { if (urlRef.current) URL.revokeObjectURL(urlRef.current); urlRef.current = next; setUrl(next) }
   function pump() {
     const current = playback.current
@@ -228,10 +253,16 @@ function SharedScreen({ token }: { token: string }) {
     <PageHeader title={info?.title || 'Shared music'} description="Listen to a shared song or playlist." />
     {!info && <Card><p className="text-[var(--muted)]">{state === 'open' ? 'Waiting for the owner to open MyTunes…' : 'Connection: ' + state}</p><p className="mt-2 text-sm">The owner must keep their MyTunes browser open for this link to play.</p></Card>}
     {error && <p role="alert" className="mt-4 text-[var(--danger)]">{error}</p>}
-    {info && <div className="grid gap-3">{info.tracks.map(track => <Card key={track.id}><div className="space-y-3">
-      <div><h2 className="font-bold">{track.title}</h2><p className="text-sm text-[var(--muted)]">{track.artist || 'Unknown artist'} · {clock(track.duration)}</p></div>
-      <button className={primary} onClick={() => { setPlaying(track.id); setReceived(0); client.current?.request(track.id) }}>Stream song</button>
-      {playing === track.id && <><p className="text-sm text-[var(--muted)]">Received {(received / 1024 / 1024).toFixed(1)} MB</p>{url && <audio aria-label={'Listen to ' + track.title} className="w-full" controls autoPlay src={url} />}</>}
-    </div></Card>)}</div>}
+    {info && <div className="space-y-4">
+      {playing && <MusicPlayer tracks={info.tracks} selectedId={playing} src={url} onSelect={requestTrack} isStream
+        note={url ? 'Streaming · received ' + (received / 1024 / 1024).toFixed(1) + ' MB' : 'Connecting to the recording…'} />}
+      <Card><div className="space-y-3"><h2 className="text-lg font-bold">Songs in this share</h2>
+        {info.tracks.map((track, index) => <div key={track.id} className="flex items-center gap-3 border-t border-[var(--line)] py-2">
+          <span className="w-6 text-sm text-[var(--muted)]">{index + 1}</span>
+          <div className="min-w-0 flex-1"><strong className="block truncate">{track.title}</strong><span className="text-sm text-[var(--muted)]">{track.artist || 'Unknown artist'} · {clock(track.duration)}</span></div>
+          <button className={primary} onClick={() => requestTrack(track.id)}>▶ Play</button>
+        </div>)}
+      </div></Card>
+    </div>}
   </>
 }
