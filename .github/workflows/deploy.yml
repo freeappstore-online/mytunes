@@ -1,0 +1,84 @@
+name: Deploy to R2
+
+# Path B hosting: builds the app on every push to main and uploads web/dist/
+# to the shared fas-apps R2 bucket at apps/<repo>/. The freeappstore-host
+# Worker on *.freeappstore.online reads this prefix to serve the app — no
+# per-app CF Pages project needed.
+#
+# Uses Cloudflare's native R2 API via wrangler (not the S3-compatible API).
+# Org-level secret required (set once on the freeappstore-online GitHub org):
+#   - CLOUDFLARE_API_TOKEN — needs Account: Workers R2 Storage: Edit
+#     and Account: Workers Scripts: Edit (so wrangler can authenticate +
+#     write objects). Generate from the CF dashboard's
+#     "Account API Tokens" page, NOT the R2 dashboard (those are S3-style
+#     keys for the S3 protocol, which we don't use).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel any in-flight deploy when a newer push lands. Without this, two
+# pushes seconds apart can race and ship the older commit on top of the
+# newer one.
+concurrency:
+  group: deploy-${{ github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      # Guard against empty/missing dist. A silent empty build would
+      # otherwise produce an empty R2 prefix and an apparently-broken app.
+      - name: Verify build output
+        run: |
+          test -d ./web/dist || { echo "::error::No build output at web/dist"; exit 1; }
+          test -n "$(ls -A ./web/dist)" || { echo "::error::web/dist is empty"; exit 1; }
+
+      # Parallel uploads to R2 via `wrangler r2 object put`. Each invocation
+      # spawns a Node process (~500ms startup), so we run 12 in parallel via
+      # xargs -P to amortize. A 5-30 file app finishes in seconds; a multi-
+      # thousand file SSG (e.g. language) takes a few minutes. No S3 protocol,
+      # no aws CLI — pure CF tooling.
+      - name: Upload to R2 (via wrangler)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          REPO="${GITHUB_REPOSITORY##*/}"
+          DIST="./web/dist"
+          BUCKET="fas-apps"
+          PREFIX="apps/${REPO}"
+          COUNT=$(find "$DIST" -type f | wc -l | tr -d ' ')
+          echo "Uploading $COUNT files to r2://$BUCKET/$PREFIX/"
+
+          # `--remote` writes to production R2 (the wrangler default is the
+          # local miniflare). `--content-type` is set explicitly because
+          # wrangler defaults to application/octet-stream, which combined
+          # with X-Content-Type-Options: nosniff would prompt download
+          # instead of rendering HTML/JS/CSS.
+          find "$DIST" -type f -print0 | xargs -0 -P 12 -I {} bash -c '
+            f="{}"
+            rel="${f#'"$DIST"'/}"
+            mime=$(file -b --mime-type "$f")
+            npx --yes wrangler@4 r2 object put "'"$BUCKET/$PREFIX"'/${rel}" \
+              --file "$f" --remote --content-type "$mime" >/dev/null
+          '
+          echo "Deployed $PREFIX from ${GITHUB_SHA::7}"

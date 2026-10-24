@@ -1,0 +1,10 @@
+node_modules
+dist
+.tmp
+*.tsbuildinfo
+.env
+.env.local
+.env.production
+
+# VibeCode QA reports (regenerated on each scan)
+.vibe-check/

@@ -1,0 +1,13 @@
+{
+  "name": "mytunes",
+  "private": true,
+  "packageManager": "pnpm@10.30.3",
+  "engines": { "node": ">=22" },
+  "pnpm": { "onlyBuiltDependencies": ["esbuild"] },
+  "scripts": {
+    "dev": "pnpm --filter @mytunes/web dev",
+    "build": "pnpm --filter @mytunes/web build",
+    "preview": "pnpm --filter @mytunes/web preview",
+    "typecheck": "pnpm --filter @mytunes/web exec tsc -b"
+  }
+}
